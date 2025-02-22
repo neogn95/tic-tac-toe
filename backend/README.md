@@ -77,20 +77,6 @@ To execute the RPC function with cURL generated a session token:
 curl "127.0.0.1:7350/v2/account/authenticate/device" --data "{\"id\": \""$(uuidgen)"\"}" --user 'defaultkey:'
 ```
 
-Take the session token in the response and use it to execute the RPC function as the user:
-
-```shell
-curl "127.0.0.1:7350/v2/rpc/rewards" -H 'Authorization: Bearer $TOKEN' --data '""'
-```
-
-This will generate an RPC response on the initial response in that day and grant no more until the rollover.
-
-```
-{"payload":"{\"coins_received\":500}"}
-or
-{"payload":"{\"coins_received\":0}"}
-```
-
 You can also skip the cURL steps and use the [Nakama Console's API Explorer](http://127.0.0.1:7351/apiexplorer) to execute the RPCs.
 
 ### Authoritative Multiplayer
