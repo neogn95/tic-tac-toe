@@ -1,0 +1,44 @@
+version: "3.8"
+
+services:
+  nakama:
+    image: nakama-build
+    depends_on:
+      - postgres
+    entrypoint: 
+      - "/bin/sh"
+      - "-ecx"
+      - "/nakama/nakama migrate up --database.address 'postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable' && exec /nakama/nakama --config /nakama/data/cloud.yml --database.address 'postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable'"
+    ports:
+      - "7350:7350"
+    deploy:
+      mode: replicated
+      replicas: 2
+      placement:
+        constraints: [node.role == manager]
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  nginx:
+    image: jonasal/nginx-certbot:latest
+    environment:
+      CERTBOT_EMAIL: "${USER_EMAIL}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - nginx_secrets:/etc/letsencrypt
+      - ./nginx_conf.d:/etc/nginx/user_conf.d
+    depends_on:
+      - nakama
+    deploy:
+      placement:
+        constraints: [node.role == manager]
+
+volumes:
+  nginx_secrets: {}
+  data: {}
