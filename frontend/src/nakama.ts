@@ -123,12 +123,6 @@ class Nakama {
         }
     }
 
-    async setLeaderboardScore(score: number) {
-        const leaderboardId = "xoxo_leaderboard";
-        await this.client.writeLeaderboardRecord(this.session, leaderboardId, score);
-        console.log("Leaderboard score set:", score);
-    }
-
     async getLeaderBoard() {
         const leaderboardId = "xoxo_leaderboard";
 
