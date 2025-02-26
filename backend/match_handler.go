@@ -471,34 +471,6 @@ func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db 
 		}
 	}
 
-	// Keep track of the time remaining for the player to submit their move. Idle players forfeit.
-	if s.playing {
-		s.deadlineRemainingTicks--
-		if s.deadlineRemainingTicks <= 0 && s.label.Fast == 1 {
-			// The player has run out of time to submit their move.
-			s.playing = false
-			switch s.mark {
-			case api.Mark_MARK_X:
-				s.winner = api.Mark_MARK_O
-			case api.Mark_MARK_O:
-				s.winner = api.Mark_MARK_X
-			}
-			s.deadlineRemainingTicks = 0
-
-			buf, err := m.marshaler.Marshal(&api.Done{
-				Board:  s.board,
-				Winner: s.winner,
-			})
-			if err != nil {
-				logger.Error("error encoding message: %v", err)
-			} else {
-				_ = dispatcher.BroadcastMessage(int64(api.OpCode_OPCODE_DONE), buf, nil, nil, true)
-			}
-			// End the match
-			return nil
-		}
-	}
-
 	return s
 }
 
