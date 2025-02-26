@@ -37,7 +37,7 @@ export function MainMenu() {
               <Clock size={24} />
               <div className="text-left">
                 <span className="block font-semibold">Blitz Mode</span>
-                <span className="text-sm opacity-90">Fast-paced with 10s per move</span>
+                <span className="text-sm opacity-90">Fast-paced with 5s per move</span>
               </div>
             </button>
           </div>

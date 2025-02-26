@@ -14,6 +14,8 @@ export function Game() {
   const username = useGameStore((state) => state.username);
   const userId = useGameStore((state) => state.userId);
   const playerMark = useGameStore((state) => state.playerMark);
+  const fastGameMode = useGameStore((state) => state.fastGameMode);
+
   const setPlayerMark = useGameStore((state) => state.setPlayerMark);
   const setGameBoard = useGameStore((state) => state.setGameBoard);
   const setCurrentPlayer = useGameStore((state) => state.setCurrentPlayer);
@@ -207,7 +209,7 @@ export function Game() {
           <h2 className="text-2xl font-bold text-gray-800">
             {getGameStatus()}
           </h2>
-          {remainingTime !== null && (
+          {fastGameMode && remainingTime !== null && (
             <div className="text-xl font-semibold text-blue-600">
               Time remaining: {formatTime(remainingTime)}
             </div>

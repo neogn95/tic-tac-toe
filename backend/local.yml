@@ -5,6 +5,7 @@ logger:
   format: "Stackdriver"
 session:
   token_expiry_sec: 7200 # 2 hours
+  refresh_token_expiry_sec: 86400
 socket:
   max_message_size_bytes: 4096 # reserved buffer
   max_request_size_bytes: 131072

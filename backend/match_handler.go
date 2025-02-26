@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"math/rand"
 	"time"
 
@@ -69,7 +70,6 @@ type MatchState struct {
 	random     *rand.Rand
 	label      *MatchLabel
 	emptyTicks int
-	ai         bool
 	messages   chan runtime.MatchData
 
 	// Currently connected users, or reserved spaces.
@@ -170,12 +170,13 @@ func (m *MatchHandler) MatchJoinAttempt(ctx context.Context, logger runtime.Logg
 }
 
 func (m *MatchHandler) MatchJoin(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, presences []runtime.Presence) interface{} {
-	logger.Info("MatchJoin called.")
+	logger.Info("MatchJoin called with %d presences", len(presences))
 
 	s := state.(*MatchState)
 	t := time.Now().UTC()
 
 	for _, presence := range presences {
+		logger.Info("Player joined: %s", presence.GetUserId())
 		s.emptyTicks = 0
 		s.presences[presence.GetUserId()] = presence
 		s.joinsInProgress--
@@ -257,6 +258,7 @@ func (m *MatchHandler) MatchLeave(ctx context.Context, logger runtime.Logger, db
 
 func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, messages []runtime.MatchData) interface{} {
 	logger.Debug("MatchLoop called.")
+	var score int64
 	s := state.(*MatchState)
 
 	if s.ConnectedCount()+s.joinsInProgress == 0 {
@@ -330,7 +332,6 @@ func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db 
 				s.winnerPositions = winningPosition
 				s.playing = false
 				s.deadlineRemainingTicks = 0
-				s.nextGameRemainingTicks = delayBetweenGamesSec * tickRate
 			}
 			// Check if game is over because no more moves are possible.
 			tie := true
@@ -352,14 +353,39 @@ func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db 
 			var opCode api.OpCode
 			var outgoingMsg proto.Message
 			if s.playing {
-				opCode = api.OpCode_OPCODE_UPDATE
-				outgoingMsg = &api.Update{
-					Board:    s.board,
-					Mark:     s.mark,
-					Deadline: t.Add(time.Duration(s.deadlineRemainingTicks/tickRate) * time.Second).Unix(),
+				// Keep track of the time remaining for the player to submit their move. Idle players forfeit.
+				s.deadlineRemainingTicks--
+				if s.deadlineRemainingTicks <= 0 && s.label.Fast == 1 {
+					// The player has run out of time to submit their move.
+					s.playing = false
+					switch s.mark {
+					case api.Mark_MARK_X:
+						s.winner = api.Mark_MARK_O
+					case api.Mark_MARK_O:
+						s.winner = api.Mark_MARK_X
+					}
+					s.deadlineRemainingTicks = 0
+
+					buf, err := m.marshaler.Marshal(&api.Done{
+						Board:           s.board,
+						Winner:          s.winner,
+						WinnerPositions: s.winnerPositions,
+					})
+					if err != nil {
+						logger.Error("error encoding message: %v", err)
+					} else {
+						_ = dispatcher.BroadcastMessage(int64(api.OpCode_OPCODE_DONE), buf, nil, nil, true)
+					}
+				} else {
+					opCode = api.OpCode_OPCODE_UPDATE
+					outgoingMsg = &api.Update{
+						Board:    s.board,
+						Mark:     s.mark,
+						Deadline: t.Add(time.Duration(s.deadlineRemainingTicks/tickRate) * time.Second).Unix(),
+					}
+					logger.Info("Deadline=%v", t.Add(time.Duration(s.deadlineRemainingTicks/tickRate)*time.Second).Unix())
+					logger.Info("On going game update message sent")
 				}
-				logger.Info("Deadline=%v", t.Add(time.Duration(s.deadlineRemainingTicks/tickRate)*time.Second).Unix())
-				logger.Info("On going game update message sent")
 			} else {
 				logger.Info("Sending game round completed message")
 				opCode = api.OpCode_OPCODE_DONE
@@ -381,16 +407,11 @@ func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db 
 					_ = dispatcher.BroadcastMessage(int64(opCode), buf, nil, nil, true)
 				}
 
-				metadata := map[string]interface{}{
-					"wins":   0,
-					"losses": 0,
-					"draws":  0,
-				}
-
 				if s.winner != api.Mark_MARK_UNSPECIFIED {
 					var winnerId string
 					var loserId string
 
+					// Set winner id and loser id
 					for userId, mark := range s.marks {
 						if mark == s.winner {
 							winnerId = userId
@@ -406,43 +427,9 @@ func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db 
 							winnerUsername = presence.GetUsername()
 						}
 
-						leaderboard, _, _, _, err := nk.LeaderboardRecordsList(ctx, "xoxo_leaderboard", []string{winnerId}, 1, "", 0)
-						if err != nil {
-							logger.Error("error getting leaderboard for winner: %v", err)
-						} else {
-							var score int64 = 100
-							for _, record := range leaderboard {
-								score += record.Score
-							}
-
-							if len(leaderboard) > 0 {
-								if leaderboard[0].Metadata != "" {
-									err = json.Unmarshal([]byte(leaderboard[0].Metadata), &metadata)
-									if err != nil {
-										logger.Error("error unmarshalling metadata for winner: %v", err)
-									}
-								}
-							}
-
-							logger.Info("metadata wins: %v", metadata["wins"])
-							logger.Info("setting metadata wins")
-
-							switch v := metadata["wins"].(type) {
-							case int:
-								metadata["wins"] = metadata["wins"].(int) + 1
-							case float64:
-								metadata["wins"] = metadata["wins"].(float64) + 1
-							default:
-								logger.Info("metadata wins type = %v", v)
-							}
-
-							logger.Info("metadata wins after setting: %v", metadata["wins"])
-
-							_, err = nk.LeaderboardRecordWrite(ctx, "xoxo_leaderboard", winnerId, winnerUsername, score, 0, metadata, nil)
-							if err != nil {
-								logger.Error("error incrementing leaderboard for winner: %v", err)
-							}
-						}
+						logger.Info("Set score for winning player %v", winnerUsername)
+						score = 100
+						setLeaderboard(ctx, nk, logger, winnerId, winnerUsername, score)
 					}
 
 					// Set score for losing player -100
@@ -451,45 +438,10 @@ func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db 
 						if presence, ok := s.presences[loserId]; ok && presence != nil {
 							loserUsername = presence.GetUsername()
 						}
-						metadata := map[string]interface{}{
-							"wins":   0,
-							"losses": 0,
-							"draws":  0,
-						}
-						leaderboard, _, _, _, err := nk.LeaderboardRecordsList(ctx, "xoxo_leaderboard", []string{loserId}, 1, "", 0)
-						if err != nil {
-							logger.Error("error getting leaderboard for loser: %v", err)
-						} else {
-							var score int64 = -100
-							if len(leaderboard) > 0 {
-								if leaderboard[0].Metadata != "" {
-									err = json.Unmarshal([]byte(leaderboard[0].Metadata), &metadata)
-									if err != nil {
-										logger.Error("error unmarshalling metadata for loser: %v", err)
-									}
-								}
-							}
-							logger.Info("metadata losses: %v", metadata["losses"])
-							logger.Info("setting metadata losses")
 
-							switch v := metadata["losses"].(type) {
-							case int:
-								metadata["losses"] = metadata["losses"].(int) + 1
-							case float64:
-								metadata["losses"] = metadata["losses"].(float64) + 1
-							default:
-								logger.Info("metadata loss type = %v", v)
-							}
-
-							logger.Info("metadata losses after setting: %v", metadata["losses"])
-
-							score += leaderboard[0].Score
-
-							_, err = nk.LeaderboardRecordWrite(ctx, "xoxo_leaderboard", loserId, loserUsername, score, 0, metadata, nil)
-							if err != nil {
-								logger.Error("error decrementing leaderboard for loser: %v", err)
-							}
-						}
+						logger.Info("Set score for losing player %v", loserUsername)
+						score = -100
+						setLeaderboard(ctx, nk, logger, loserId, loserUsername, score)
 					}
 
 				} else {
@@ -500,37 +452,9 @@ func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db 
 							username = presence.GetUsername()
 						}
 
-						leaderboard, _, _, _, err := nk.LeaderboardRecordsList(ctx, "xoxo_leaderboard", []string{userId}, 1, "", 0)
-						if err != nil {
-							logger.Error("error getting leaderboard for draw: %v", err)
-						} else {
-							var score int64 = 10
-
-							if len(leaderboard) > 0 {
-								if leaderboard[0].Metadata != "" {
-									err = json.Unmarshal([]byte(leaderboard[0].Metadata), &metadata)
-									if err != nil {
-										logger.Error("error unmarshalling metadata for draw: %v", err)
-									}
-								}
-							}
-
-							switch v := metadata["draws"].(type) {
-							case int:
-								metadata["draws"] = metadata["draws"].(int) + 1
-							case float64:
-								metadata["draws"] = metadata["draws"].(float64) + 1
-							default:
-								logger.Info("metadata draws type = %v", v)
-							}
-
-							score += leaderboard[0].Score
-
-							_, err = nk.LeaderboardRecordWrite(ctx, "xoxo_leaderboard", userId, username, score, 0, metadata, nil)
-							if err != nil {
-								logger.Error("error incrementing leaderboard for draw: %v", err)
-							}
-						}
+						logger.Info("Set score for tied player %v", username)
+						score = 10
+						setLeaderboard(ctx, nk, logger, userId, username, score)
 					}
 				}
 				return nil
@@ -635,6 +559,143 @@ func startNewGame(s *MatchState, logger runtime.Logger, dispatcher runtime.Match
 		_ = dispatcher.BroadcastMessage(int64(api.OpCode_OPCODE_START), buf, nil, nil, true)
 	}
 	return s
+}
+
+func setLeaderboard(ctx context.Context, nk runtime.NakamaModule, logger runtime.Logger,
+	userId string, userName string, score int64) {
+
+	var metadata map[string]interface{}
+	var calcScore int64
+	var err error
+
+	logger.Info("Setting leaderboard metadata")
+	metadata, calcScore, err = getLeaderboardMetadata(ctx, nk, logger, userId, score)
+	logger.Info("Fetched userName = %v metadata = %v", userName, metadata)
+
+	if metadata == nil {
+		metadata = map[string]interface{}{
+			"wins":   0,
+			"losses": 0,
+			"draws":  0,
+		}
+	}
+
+	if err == nil {
+		// Only update wins if it's a win condition
+		if score == 100 {
+			logger.Info("Setting win condition")
+			switch v := metadata["wins"].(type) {
+			case int:
+				metadata["wins"] = metadata["wins"].(int) + 1
+			case float64:
+				metadata["wins"] = metadata["wins"].(float64) + 1
+			default:
+				logger.Info("metadata wins type = %v", v)
+			}
+			logger.Info("metadata wins after setting: %v", metadata["wins"])
+		}
+
+		// Only update losses if it's a loss condition
+		if score == -100 {
+			switch v := metadata["losses"].(type) {
+			case int:
+				metadata["losses"] = metadata["losses"].(int) + 1
+			case float64:
+				metadata["losses"] = metadata["losses"].(float64) + 1
+			default:
+				logger.Info("metadata losses type = %v", v)
+			}
+			logger.Info("metadata losses after setting: %v", metadata["losses"])
+		}
+
+		// Handle draw condition
+		if score == 10 {
+			switch v := metadata["draws"].(type) {
+			case int:
+				metadata["draws"] = metadata["draws"].(int) + 1
+			case float64:
+				metadata["draws"] = metadata["draws"].(float64) + 1
+			default:
+				logger.Info("metadata draws type = %v", v)
+			}
+			logger.Info("metadata draws after setting: %v", metadata["draws"])
+		}
+	}
+
+	score = calcScore
+	// Ensure score is non-negative for leaderboard write
+	if score < 0 {
+		score = 0
+	}
+
+	writeLeaderboard(ctx, nk, logger, userId, userName, score, metadata)
+}
+
+func getLeaderboardMetadata(ctx context.Context, nk runtime.NakamaModule, logger runtime.Logger,
+	userId string, score int64) (map[string]interface{}, int64, error) {
+	logger.Info("Getting the leaderboard for userId: %v", userId)
+	metadata := map[string]interface{}{
+		"wins":   0,
+		"losses": 0,
+		"draws":  0,
+	}
+
+	leaderboard, err := nk.LeaderboardRecordsHaystack(ctx, "xoxo_leaderboard", userId, 2, "", 0)
+
+	if err != nil {
+		logger.Error("error getting leaderboard for user: %v", err)
+	} else {
+		// Unmarshal the leaderboard to metadata
+		if len(leaderboard.Records) > 0 {
+			for _, entry := range leaderboard.Records {
+				logger.Info("entry.OwnerId: %v", entry.OwnerId)
+				logger.Info("entry.Metadata, %v", entry.Metadata)
+
+				if entry.Metadata != "" && entry.OwnerId == userId {
+					logger.Info("Unmarshalling the leaderboard metadata")
+					err = json.Unmarshal([]byte(entry.Metadata), &metadata)
+					if err != nil {
+						logger.Info("error unmarshalling metadata for user: %v", err)
+						metadata = nil
+					}
+
+					var absScore = int64(math.Abs(float64(score)))
+					logger.Info("absScore: %v", absScore)
+
+					if entry.Score > absScore {
+						score += entry.Score
+					}
+				}
+			}
+		} else {
+			logger.Info("No data in metadata")
+		}
+	}
+
+	logger.Info("fetched metadata: %v", metadata)
+	return metadata, score, err
+}
+
+func writeLeaderboard(ctx context.Context, nk runtime.NakamaModule, logger runtime.Logger, userId string,
+	userName string, score int64, metadata map[string]interface{}) {
+	logger.Info("Writing leaderboard metadata")
+	logger.Info("metadata: %v", metadata)
+
+	var err error
+
+	err = nk.LeaderboardRecordDelete(ctx, "xoxo_leaderboard", userId)
+	if err != nil {
+		logger.Info("error deleting leaderboard entry for user: %v", err)
+	}
+
+	logger.Info("deleted leaderboard entry for user: %v", userName)
+
+	_, err = nk.LeaderboardRecordWrite(ctx, "xoxo_leaderboard", userId, userName, score, 0, metadata, nil)
+	if err != nil {
+		logger.Info("error writing leaderboard for user: %v", err)
+	}
+
+	logger.Info("added leaderboard entry for user: %v", userName)
 }
 
 func (m *MatchHandler) MatchSignal(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, dispatcher runtime.MatchDispatcher, tick int64, state interface{}, data string) (interface{}, string) {

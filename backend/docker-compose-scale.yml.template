@@ -2,9 +2,7 @@ version: "3.8"
 
 services:
   nakama:
-    image: nakama-build
-    depends_on:
-      - postgres
+    image: neogn95/nakama-build
     entrypoint: 
       - "/bin/sh"
       - "-ecx"

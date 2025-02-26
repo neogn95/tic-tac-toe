@@ -9,12 +9,19 @@ import { Leaderboard } from './components/Leaderboard';
 
 function App() {
   const currentPage = useGameStore(state => state.currentPage);
+  const setCurrentPage = useGameStore(state => state.setCurrentPage);
 
   useEffect(() => {
-    const checkSession = async () => {
-      await nakama.isSessionExpired();
-    };
-    checkSession();
+    try{
+      const checkSession = async () => {
+        await nakama.isSessionExpired();
+      };
+      checkSession();
+    }
+    catch(ex){
+      console.log(ex);
+      setCurrentPage('home');
+    }
   }, []);
 
   const renderPage = () => {
