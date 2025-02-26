@@ -91,8 +91,6 @@ type MatchState struct {
 	winner api.Mark
 	// The winner positions.
 	winnerPositions []int32
-	// Ticks until the next game starts, if applicable.
-	nextGameRemainingTicks int64
 }
 
 func (ms *MatchState) ConnectedCount() int {
@@ -279,7 +277,6 @@ func (m *MatchHandler) MatchLoop(ctx context.Context, logger runtime.Logger, db 
 	}
 
 	// There's a game in progress. Check for input, update match state, and send messages to clients.
-
 	for _, message := range messages {
 		logger.Info("Game in progress!")
 		switch api.OpCode(message.GetOpCode()) {
