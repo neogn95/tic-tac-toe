@@ -52,7 +52,7 @@ func rpcFindMatch(marshaler *protojson.MarshalOptions, unmarshaler *protojson.Un
 		}
 
 		// Two-step process: First look for matches, then create if needed
-		// Step 1: Look for existing matches first
+		// Look for existing matches first
 		query := fmt.Sprintf("+label.open:1 +label.fast:%d", fast)
 
 		// Try finding a match first - most of the time this will succeed
@@ -66,7 +66,6 @@ func rpcFindMatch(marshaler *protojson.MarshalOptions, unmarshaler *protojson.Un
 			logger.Info("Found an existing match to join")
 			matchIDs = append(matchIDs, matches[0].MatchId) // Join the first available match
 		} else {
-			// Step 2: No matches found, we need coordination for creating a new one
 
 			// Generate a consistent key for this match type
 			matchTypeKey := fmt.Sprintf("match_lock_fast_%d", fast)
